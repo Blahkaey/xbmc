@@ -140,6 +140,8 @@ bool CWinSystemGbm::InitWindowSystem()
     {
       m_info = UTILS::CDisplayInfo::Create(edid);
     }
+
+    SetHDR(nullptr);
   }
 
   if (!m_GBM->CreateDevice(m_DRM->GetFileDescriptor()))
