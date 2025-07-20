@@ -13,6 +13,7 @@
 #include "GUIInfoManager.h"
 #include "GUIUserMessages.h"
 #include "ServiceBroker.h"
+#include "SetInfoTag.h"
 #include "TextureCache.h"
 #include "URL.h"
 #include "Util.h"
@@ -37,6 +38,7 @@
 #include "settings/AdvancedSettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
+#include "tags/SetInfoTagLoaderFactory.h"
 #include "tags/VideoInfoTagLoaderFactory.h"
 #include "utils/ArtUtils.h"
 #include "utils/Digest.h"
@@ -93,6 +95,94 @@ void ProcessEpisodeRange(int first,
     episodeList.pop_back();
   }
 }
+
+/*! \brief Retrieve the art type for an image from the given size.
+ \param width the width of the image.
+ \param height the height of the image.
+ \return "poster" if the aspect ratio is at most 4:5, "banner" if the aspect ratio
+         is at least 1:4, "thumb" otherwise.
+ */
+std::string GetArtTypeFromSize(unsigned int width, unsigned int height)
+{
+  std::string type = "thumb";
+  if (width * 5 < height * 4)
+    type = "poster";
+  else if (width > height * 4)
+    type = "banner";
+  return type;
+}
+
+void AddLocalItemArtwork(KODI::ART::Artwork& itemArt,
+                         const std::vector<std::string>& wantedArtTypes,
+                         const std::string& itemPath,
+                         bool addAll,
+                         bool exactName)
+{
+  std::string path = URIUtils::GetDirectory(itemPath);
+  if (path.empty())
+    return;
+
+  CFileItemList availableArtFiles;
+  CDirectory::GetDirectory(path, availableArtFiles,
+                           CServiceBroker::GetFileExtensionProvider().GetPictureExtensions(),
+                           DIR_FLAG_NO_FILE_DIRS | DIR_FLAG_READ_CACHE | DIR_FLAG_NO_FILE_INFO);
+
+  std::string baseFilename = URIUtils::GetFileName(itemPath);
+  if (!baseFilename.empty())
+  {
+    URIUtils::RemoveExtension(baseFilename);
+    baseFilename.append("-");
+  }
+
+  const bool caseSensitive{
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_caseSensitiveLocalArtMatch};
+
+  for (const auto& artFile : availableArtFiles)
+  {
+    std::string candidate{URIUtils::GetFileName(artFile->GetPath())};
+    const bool matchesFilename{!baseFilename.empty() &&
+                               (caseSensitive
+                                    ? StringUtils::StartsWith(candidate, baseFilename)
+                                    : StringUtils::StartsWithNoCase(candidate, baseFilename))};
+
+    if (!baseFilename.empty() && !matchesFilename)
+      continue;
+
+    if (matchesFilename)
+      candidate.erase(0, baseFilename.length());
+    URIUtils::RemoveExtension(candidate);
+    StringUtils::ToLower(candidate);
+
+    // move 'folder' to thumb / poster / banner based on aspect ratio
+    // if such artwork doesn't already exist
+    if (!matchesFilename && StringUtils::EqualsNoCase(candidate, "folder") &&
+        !CVideoThumbLoader::IsArtTypeInWhitelist("folder", wantedArtTypes, exactName))
+    {
+      // cache the image to determine sizing
+      CTextureDetails details;
+      if (CServiceBroker::GetTextureCache()->CacheImage(artFile->GetPath(), details))
+      {
+        candidate = GetArtTypeFromSize(details.width, details.height);
+        if (itemArt.contains(candidate))
+          continue;
+      }
+    }
+
+    if ((addAll && CVideoThumbLoader::IsValidArtType(candidate)) ||
+        CVideoThumbLoader::IsArtTypeInWhitelist(candidate, wantedArtTypes, exactName))
+    {
+      itemArt[candidate] = artFile->GetPath();
+    }
+  }
+}
+
+void OnDirectoryScanned(const std::string& strDirectory)
+{
+  CGUIMessage msg(GUI_MSG_DIRECTORY_SCANNED, 0, 0, 0);
+  msg.SetStringParam(strDirectory);
+  CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
+}
+
 } // namespace
 
 namespace KODI::VIDEO
@@ -229,7 +319,6 @@ CVideoInfoScanner::~CVideoInfoScanner()
 
   void CVideoInfoScanner::Start(const std::string& strDirectory, bool scanAll)
   {
-    m_strStartDir = strDirectory;
     m_scanAll = scanAll;
     m_pathsToScan.clear();
     m_pathsToClean.clear();
@@ -272,13 +361,6 @@ CVideoInfoScanner::~CVideoInfoScanner()
     m_bStop = true;
   }
 
-  static void OnDirectoryScanned(const std::string& strDirectory)
-  {
-    CGUIMessage msg(GUI_MSG_DIRECTORY_SCANNED, 0, 0, 0);
-    msg.SetStringParam(strDirectory);
-    CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
-  }
-
   bool CVideoInfoScanner::DoScan(const std::string& strDirectory)
   {
     if (m_handle)
@@ -303,12 +385,12 @@ CVideoInfoScanner::~CVideoInfoScanner()
     SScanSettings settings;
     ScraperPtr info =
         m_database.GetScraperForPath(strDirectory, settings, foundDirectly, &m_scraperCache);
-    CONTENT_TYPE content = info ? info->Content() : CONTENT_NONE;
+    ContentType content = info ? info->Content() : ContentType::NONE;
 
     // exclude folders that match our exclude regexps
     const std::vector<std::string>& regexps =
-        content == CONTENT_TVSHOWS ? m_advancedSettings->m_tvshowExcludeFromScanRegExps
-                                   : m_advancedSettings->m_moviesExcludeFromScanRegExps;
+        content == ContentType::TVSHOWS ? m_advancedSettings->m_tvshowExcludeFromScanRegExps
+                                        : m_advancedSettings->m_moviesExcludeFromScanRegExps;
 
     if (CUtil::ExcludeFileOrFolder(strDirectory, regexps))
       return true;
@@ -317,7 +399,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
       return true;
 
     bool ignoreFolder = !m_scanAll && settings.noupdate;
-    if (content == CONTENT_NONE || ignoreFolder)
+    if (content == ContentType::NONE || ignoreFolder)
       return true;
 
     if (URIUtils::IsPlugin(strDirectory) && !CPluginDirectory::IsMediaLibraryScanningAllowed(TranslateContent(content), strDirectory))
@@ -325,16 +407,16 @@ CVideoInfoScanner::~CVideoInfoScanner()
       CLog::Log(
           LOGINFO,
           "VideoInfoScanner: Plugin '{}' does not support media library scanning for '{}' content",
-          CURL::GetRedacted(strDirectory), TranslateContent(content));
+          CURL::GetRedacted(strDirectory), content);
       return true;
     }
 
     std::string hash, dbHash;
-    if (content == CONTENT_MOVIES ||content == CONTENT_MUSICVIDEOS)
+    if (content == ContentType::MOVIES || content == ContentType::MUSICVIDEOS)
     {
       if (m_handle)
       {
-        int str = content == CONTENT_MOVIES ? 20317:20318;
+        int str = content == ContentType::MOVIES ? 20317 : 20318;
         m_handle->SetTitle(StringUtils::Format(g_localizeStrings.Get(str), info->Name()));
       }
 
@@ -390,7 +472,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
                   CURL::GetRedacted(strDirectory), dbHash, hash);
       }
     }
-    else if (content == CONTENT_TVSHOWS)
+    else if (content == ContentType::TVSHOWS)
     {
       if (m_handle)
         m_handle->SetTitle(StringUtils::Format(g_localizeStrings.Get(20319), info->Name()));
@@ -422,7 +504,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
       foundSomething = RetrieveVideoInfo(items, settings.parent_name_root, content);
       if (foundSomething)
       {
-        if (!m_bStop && (content == CONTENT_MOVIES || content == CONTENT_MUSICVIDEOS))
+        if (!m_bStop && (content == ContentType::MOVIES || content == ContentType::MUSICVIDEOS))
         {
           m_database.SetPathHash(strDirectory, hash);
           if (m_bClean)
@@ -439,7 +521,8 @@ CVideoInfoScanner::~CVideoInfoScanner()
                   CURL::GetRedacted(strDirectory));
       }
     }
-    else if (!StringUtils::EqualsNoCase(hash, dbHash) && (content == CONTENT_MOVIES || content == CONTENT_MUSICVIDEOS))
+    else if (!StringUtils::EqualsNoCase(hash, dbHash) &&
+             (content == ContentType::MOVIES || content == ContentType::MUSICVIDEOS))
     { // update the hash either way - we may have changed the hash to a fast version
       m_database.SetPathHash(strDirectory, hash);
     }
@@ -454,8 +537,12 @@ CVideoInfoScanner::~CVideoInfoScanner()
       if (m_bStop)
         break;
 
+      // See if set needs updating
+      if (content == ContentType::MOVIES)
+        UpdateSet(pItem);
+
       // add video extras to library
-      if (foundSomething && content == CONTENT_MOVIES && settings.parent_name &&
+      if (foundSomething && content == ContentType::MOVIES && settings.parent_name &&
           !m_ignoreVideoExtras && IsVideoExtrasFolder(*pItem))
       {
         if (AddVideoExtras(items, content, pItem->GetPath()))
@@ -471,7 +558,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
       // if we have a directory item (non-playlist) we then recurse into that folder
       // do not recurse for tv shows - we have already looked recursively for episodes
       if (pItem->IsFolder() && !pItem->IsParentFolder() && !PLAYLIST::IsPlayList(*pItem) &&
-          settings.recurse > 0 && content != CONTENT_TVSHOWS)
+          settings.recurse > 0 && content != ContentType::TVSHOWS)
       {
         if (!DoScan(pItem->GetPath()))
         {
@@ -482,7 +569,111 @@ CVideoInfoScanner::~CVideoInfoScanner()
     return !m_bStop;
   }
 
-  bool CVideoInfoScanner::RetrieveVideoInfo(CFileItemList& items, bool bDirNames, CONTENT_TYPE content, bool useLocal, CScraperUrl* pURL, bool fetchEpisodes, CGUIDialogProgress* pDlgProgress)
+  void CVideoInfoScanner::UpdateSet(const std::shared_ptr<CFileItem>& item)
+  {
+    bool update{false};
+    CVideoInfoTag movieDetails;
+    int dbId{-1};
+
+    // If set information not already updated, see if movie set.nfo preset and/or artwork empty and
+    // could be updated locally from the movie set information folder
+    if (!item->GetProperty("set_updated").asBoolean(false))
+    {
+      if (!URIUtils::GetFileName(item->GetPath()).empty() &&
+          !URIUtils::IsPlugin(item->GetDynPath()) &&
+          m_database.GetMovieInfo(item->GetPath(), movieDetails) && movieDetails.m_set.HasTitle())
+      {
+        dbId = movieDetails.m_set.GetID();
+        movieDetails.m_set.SetTitle(m_database.GetOriginalSetById(dbId)); // Original title
+        update = UpdateSetInTag(movieDetails); // Returned in tag
+      }
+    }
+    else
+    {
+      // Set information already updated
+      movieDetails = *item->GetVideoInfoTag();
+      update = true;
+      dbId = movieDetails.m_set.GetID();
+    }
+
+    if (update)
+    {
+      m_database.AddSet(movieDetails.m_set.GetTitle(), movieDetails.m_set.GetOverview(),
+                        movieDetails.m_set.GetOriginalTitle(),
+                        movieDetails.GetUpdateSetOverview()); // Update set
+      m_database.SetArtForItem(dbId, MediaTypeVideoCollection, movieDetails.m_set.GetArt());
+    }
+  }
+
+  bool CVideoInfoScanner::UpdateSetInTag(CVideoInfoTag& tag)
+  {
+    // Uses the set information in m_set from a tag of a movie
+    // If there is a set, see if the details need to be updated from the
+    // Movie Set Information Folder
+    if (!tag.m_set.HasTitle())
+      return false;
+
+    bool setUpdated{false};
+    ART::Artwork movieSetArt;
+    const std::string movieSetInfoPath{GetMovieSetInfoFolder(tag.m_set.GetTitle())};
+    if (!movieSetInfoPath.empty())
+    {
+      // Look for set.nfo
+      if (const std::unique_ptr setLoader{
+              CSetInfoTagLoaderFactory::CreateLoader(tag.m_set.GetTitle())};
+          setLoader)
+      {
+        CSetInfoTag setTag;
+        InfoType result{setLoader->Load(setTag, false)};
+        if (result != InfoType::NONE && !setTag.IsEmpty())
+        {
+          tag.m_set.SetOriginalTitle(tag.m_set.GetTitle());
+          if (!setTag.GetTitle().empty())
+            tag.m_set.SetTitle(setTag.GetTitle());
+          if (!setTag.GetOverview().empty())
+          {
+            tag.m_set.SetOverview(setTag.GetOverview());
+            tag.SetUpdateSetOverview(true);
+          }
+          if (setTag.HasArt())
+            tag.m_set.SetArt(setTag.GetArt());
+          setUpdated = true;
+        }
+      }
+
+      // Now look for art
+      // Look for local art files first
+      const std::vector<std::string> movieSetArtTypes =
+          CVideoThumbLoader::GetArtTypes(MediaTypeVideoCollection);
+      AddLocalItemArtwork(movieSetArt, movieSetArtTypes, movieSetInfoPath, true, false);
+
+      // If art specified in set.nfo use that next
+      if (movieSetArt.empty() && tag.m_set.HasArt())
+        for (auto& art : tag.m_set.GetArt())
+          if (CVideoThumbLoader::IsArtTypeInWhitelist(art.first, movieSetArtTypes, false))
+            movieSetArt.insert(art);
+    }
+    else
+    {
+      // No MSIF, so use the set art from the scraper (already in tag)
+      tag.m_strPictureURL.Parse();
+      for (const auto& url : tag.m_strPictureURL.GetUrls())
+        if (StringUtils::StartsWith(url.m_aspect, "set."))
+          movieSetArt.try_emplace(url.m_aspect.substr(4), url.m_url);
+    }
+    if (!movieSetArt.empty())
+      tag.m_set.SetArt(movieSetArt);
+
+    return setUpdated;
+  }
+
+  bool CVideoInfoScanner::RetrieveVideoInfo(const CFileItemList& items,
+                                            bool bDirNames,
+                                            ContentType content,
+                                            bool useLocal,
+                                            CScraperUrl* pURL,
+                                            bool fetchEpisodes,
+                                            CGUIDialogProgress* pDlgProgress)
   {
     if (pDlgProgress)
     {
@@ -517,23 +708,23 @@ CVideoInfoScanner::~CVideoInfoScanner()
 
       // Discard all exclude files defined by regExExclude
       if (CUtil::ExcludeFileOrFolder(pItem->GetPath(),
-                                     (content == CONTENT_TVSHOWS)
+                                     (content == ContentType::TVSHOWS)
                                          ? m_advancedSettings->m_tvshowExcludeFromScanRegExps
                                          : m_advancedSettings->m_moviesExcludeFromScanRegExps))
         continue;
 
-      if (info2->Content() == CONTENT_MOVIES || info2->Content() == CONTENT_MUSICVIDEOS)
+      if (info2->Content() == ContentType::MOVIES || info2->Content() == ContentType::MUSICVIDEOS)
       {
         if (m_handle)
           m_handle->SetPercentage(i*100.f/items.Size());
       }
 
       InfoRet ret = InfoRet::CANCELLED;
-      if (info2->Content() == CONTENT_TVSHOWS)
+      if (info2->Content() == ContentType::TVSHOWS)
         ret = RetrieveInfoForTvShow(pItem.get(), bDirNames, info2, useLocal, pURL, fetchEpisodes, pDlgProgress);
-      else if (info2->Content() == CONTENT_MOVIES)
+      else if (info2->Content() == ContentType::MOVIES)
         ret = RetrieveInfoForMovie(pItem.get(), bDirNames, info2, useLocal, pURL, pDlgProgress);
-      else if (info2->Content() == CONTENT_MUSICVIDEOS)
+      else if (info2->Content() == ContentType::MUSICVIDEOS)
         ret = RetrieveInfoForMusicVideo(pItem.get(), bDirNames, info2, useLocal, pURL, pDlgProgress);
       else
       {
@@ -560,15 +751,15 @@ CVideoInfoScanner::~CVideoInfoScanner()
                   CURL::GetRedacted(pItem->GetPath()));
 
         MediaType mediaType = MediaTypeMovie;
-        if (info2->Content() == CONTENT_TVSHOWS)
+        if (info2->Content() == ContentType::TVSHOWS)
           mediaType = MediaTypeTvShow;
-        else if (info2->Content() == CONTENT_MUSICVIDEOS)
+        else if (info2->Content() == ContentType::MUSICVIDEOS)
           mediaType = MediaTypeMusicVideo;
 
         auto eventLog = CServiceBroker::GetEventLog();
         if (eventLog)
         {
-          const std::string itemlogpath = (info2->Content() == CONTENT_TVSHOWS)
+          const std::string itemlogpath = (info2->Content() == ContentType::TVSHOWS)
                                               ? CURL::GetRedacted(pItem->GetPath())
                                               : URIUtils::GetFileName(pItem->GetPath());
 
@@ -586,7 +777,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
         seenPaths.push_back(m_database.GetPathId(pItem->GetPath()));
     }
 
-    if (content == CONTENT_TVSHOWS && ! seenPaths.empty())
+    if (content == ContentType::TVSHOWS && !seenPaths.empty())
     {
       std::vector<std::pair<int, std::string>> libPaths;
       m_database.GetSubPaths(items.GetPath(), libPaths);
@@ -699,7 +890,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
     long lResult = -1;
     if (info2->IsPython() && CUtil::GetFilenameIdentifier(movieTitle, identifierType, identifier))
     {
-      const std::unordered_map<std::string, std::string> uniqueIDs{{identifierType, identifier}};
+      const ADDON::CScraper::UniqueIDs uniqueIDs{{identifierType, identifier}};
       if (GetDetails(pItem, uniqueIDs, url, info2,
                      (result == InfoType::COMBINED || result == InfoType::OVERRIDE) ? loader.get()
                                                                                     : nullptr,
@@ -728,7 +919,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
       return retVal < 0 ? InfoRet::CANCELLED : InfoRet::NOT_FOUND;
 
     CLog::Log(LOGDEBUG, "VideoInfoScanner: Fetching url '{}' using {} scraper (content: '{}')",
-              url.GetFirstThumbUrl(), info2->Name(), TranslateContent(info2->Content()));
+              url.GetFirstThumbUrl(), info2->Name(), info2->Content());
     const std::unordered_map<std::string, std::string> uniqueIDs{{identifierType, identifier}};
 
     if (GetDetails(pItem, {}, url, info2,
@@ -776,6 +967,9 @@ CVideoInfoScanner::~CVideoInfoScanner()
       std::tie(result, loader) = ReadInfoTag(*pItem, info2, bDirNames, true);
     if (result == InfoType::FULL)
     {
+      if (UpdateSetInTag(*pItem->GetVideoInfoTag()))
+        pItem->SetProperty("set_updated", true);
+
       const int dbId = AddVideo(pItem, info2->Content(), bDirNames, true);
       if (dbId < 0)
         return InfoRet::INFO_ERROR;
@@ -804,12 +998,15 @@ CVideoInfoScanner::~CVideoInfoScanner()
     std::string identifier;
     if (info2->IsPython() && CUtil::GetFilenameIdentifier(movieTitle, identifierType, identifier))
     {
-      const std::unordered_map<std::string, std::string> uniqueIDs{{identifierType, identifier}};
+      const ADDON::CScraper::UniqueIDs uniqueIDs{{identifierType, identifier}};
       if (GetDetails(pItem, uniqueIDs, url, info2,
                      (result == InfoType::COMBINED || result == InfoType::OVERRIDE) ? loader.get()
                                                                                     : nullptr,
                      pDlgProgress))
       {
+        if (UpdateSetInTag(*pItem->GetVideoInfoTag()))
+          pItem->SetProperty("set_updated", true);
+
         const int dbId = AddVideo(pItem, info2->Content(), bDirNames, useLocal);
         if (dbId < 0)
           return InfoRet::INFO_ERROR;
@@ -825,13 +1022,16 @@ CVideoInfoScanner::~CVideoInfoScanner()
       return retVal < 0 ? InfoRet::CANCELLED : InfoRet::NOT_FOUND;
 
     CLog::Log(LOGDEBUG, "VideoInfoScanner: Fetching url '{}' using {} scraper (content: '{}')",
-              url.GetFirstThumbUrl(), info2->Name(), TranslateContent(info2->Content()));
+              url.GetFirstThumbUrl(), info2->Name(), info2->Content());
 
     if (GetDetails(pItem, {}, url, info2,
                    (result == InfoType::COMBINED || result == InfoType::OVERRIDE) ? loader.get()
                                                                                   : nullptr,
                    pDlgProgress))
     {
+      if (UpdateSetInTag(*pItem->GetVideoInfoTag()))
+        pItem->SetProperty("set_updated", true);
+
       const int dbId = AddVideo(pItem, info2->Content(), bDirNames, useLocal);
       if (dbId < 0)
         return InfoRet::INFO_ERROR;
@@ -897,7 +1097,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
     std::string identifier;
     if (info2->IsPython() && CUtil::GetFilenameIdentifier(movieTitle, identifierType, identifier))
     {
-      const std::unordered_map<std::string, std::string> uniqueIDs{{identifierType, identifier}};
+      const ADDON::CScraper::UniqueIDs uniqueIDs{{identifierType, identifier}};
       if (GetDetails(pItem, uniqueIDs, url, info2,
                      (result == InfoType::COMBINED || result == InfoType::OVERRIDE) ? loader.get()
                                                                                     : nullptr,
@@ -915,7 +1115,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
       return retVal < 0 ? InfoRet::CANCELLED : InfoRet::NOT_FOUND;
 
     CLog::Log(LOGDEBUG, "VideoInfoScanner: Fetching url '{}' using {} scraper (content: '{}')",
-              url.GetFirstThumbUrl(), info2->Name(), TranslateContent(info2->Content()));
+              url.GetFirstThumbUrl(), info2->Name(), info2->Content());
 
     if (GetDetails(pItem, {}, url, info2,
                    (result == InfoType::COMBINED || result == InfoType::OVERRIDE) ? loader.get()
@@ -967,10 +1167,10 @@ CVideoInfoScanner::~CVideoInfoScanner()
           loader.GetArtwork(showInfo);
         }
         GetSeasonThumbs(showInfo, seasonArt, CVideoThumbLoader::GetArtTypes(MediaTypeSeason), useLocal && !item->IsPlugin());
-        for (auto i = seasonArt.begin(); i != seasonArt.end(); ++i)
+        for (const auto& [name, art] : seasonArt)
         {
-          int seasonID = m_database.AddSeason(showID, i->first);
-          m_database.SetArtForItem(seasonID, MediaTypeSeason, i->second);
+          int seasonID = m_database.AddSeason(showID, name);
+          m_database.SetArtForItem(seasonID, MediaTypeSeason, art);
         }
       }
     }
@@ -1512,7 +1712,30 @@ CVideoInfoScanner::~CVideoInfoScanner()
     return false;
   }
 
-  long CVideoInfoScanner::AddVideo(CFileItem *pItem, const CONTENT_TYPE &content, bool videoFolder /* = false */, bool useLocal /* = true */, const CVideoInfoTag *showInfo /* = NULL */, bool libraryImport /* = false */)
+  bool CVideoInfoScanner::AddSet(const CSetInfoTag& set)
+  {
+    // ensure our database is open (this can get called via other classes)
+    if (!m_database.Open())
+      return false;
+
+    CLog::LogF(LOGDEBUG, "Adding new set {}", set.GetTitle());
+
+    // Create set
+    const int idSet{m_database.AddSet(set.GetTitle(), set.GetOverview(), set.GetOriginalTitle())};
+
+    // Assume art in set
+    if (idSet > 0)
+      return m_database.SetArtForItem(idSet, MediaTypeVideoCollection, set.GetArt());
+
+    return false;
+  }
+
+  long CVideoInfoScanner::AddVideo(CFileItem* pItem,
+                                   ContentType content,
+                                   bool videoFolder /* = false */,
+                                   bool useLocal /* = true */,
+                                   const CVideoInfoTag* showInfo /* = NULL */,
+                                   bool libraryImport /* = false */)
   {
     // ensure our database is open (this can get called via other classes)
     if (!m_database.Open())
@@ -1538,7 +1761,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
 
     std::string strTitle(movieDetails.m_strTitle);
 
-    if (showInfo && content == CONTENT_TVSHOWS)
+    if (showInfo && content == ContentType::TVSHOWS)
     {
       strTitle = StringUtils::Format("{} - {}x{} - {}", showInfo->m_strTitle,
                                      movieDetails.m_iSeason, movieDetails.m_iEpisode, strTitle);
@@ -1563,10 +1786,11 @@ CVideoInfoScanner::~CVideoInfoScanner()
       }
     }
 
-    CLog::Log(LOGDEBUG, "VideoInfoScanner: Adding new item to {}:{}", TranslateContent(content), CURL::GetRedacted(pItem->GetPath()));
+    CLog::Log(LOGDEBUG, "VideoInfoScanner: Adding new item to {}:{}", content,
+              CURL::GetRedacted(pItem->GetPath()));
     long lResult = -1;
 
-    if (content == CONTENT_MOVIES)
+    if (content == ContentType::MOVIES)
     {
       // find local trailer first
       std::string strTrailer = UTILS::FindTrailer(*pItem);
@@ -1577,7 +1801,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
       const std::string discNum{CUtil::GetPartNumberFromPath(movieDetails.m_strFileNameAndPath)};
       if (!discNum.empty())
       {
-        if (movieDetails.m_set.title.empty())
+        if (!movieDetails.m_set.HasTitle())
         {
           const std::string setName{m_database.GetSetByNameLike(movieDetails.m_strTitle)};
           if (!setName.empty())
@@ -1615,7 +1839,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
                     movieDetails.m_strTitle, movieDetails.m_showLink[i]);
       }
     }
-    else if (content == CONTENT_TVSHOWS)
+    else if (content == ContentType::TVSHOWS)
     {
       if (pItem->IsFolder())
       {
@@ -1658,7 +1882,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
         }
       }
     }
-    else if (content == CONTENT_MUSICVIDEOS)
+    else if (content == ContentType::MUSICVIDEOS)
     {
       lResult = m_database.SetDetailsForMusicVideo(movieDetails, art);
       movieDetails.m_iDbId = lResult;
@@ -1688,44 +1912,36 @@ CVideoInfoScanner::~CVideoInfoScanner()
     return lResult;
   }
 
-  std::string ContentToMediaType(CONTENT_TYPE content, bool folder)
+  std::string ContentToMediaType(ContentType content, bool folder)
   {
     switch (content)
     {
-      case CONTENT_MOVIES:
+      using enum ContentType;
+      case MOVIES:
         return MediaTypeMovie;
-      case CONTENT_MUSICVIDEOS:
+      case MUSICVIDEOS:
         return MediaTypeMusicVideo;
-      case CONTENT_TVSHOWS:
+      case TVSHOWS:
         return folder ? MediaTypeTvShow : MediaTypeEpisode;
       default:
         return "";
     }
   }
 
-  VideoDbContentType ContentToVideoDbType(CONTENT_TYPE content)
+  VideoDbContentType ContentToVideoDbType(ContentType content)
   {
     switch (content)
     {
-      case CONTENT_MOVIES:
+      using enum ContentType;
+      case MOVIES:
         return VideoDbContentType::MOVIES;
-      case CONTENT_MUSICVIDEOS:
+      case MUSICVIDEOS:
         return VideoDbContentType::MUSICVIDEOS;
-      case CONTENT_TVSHOWS:
+      case TVSHOWS:
         return VideoDbContentType::EPISODES;
       default:
         return VideoDbContentType::UNKNOWN;
     }
-  }
-
-  std::string CVideoInfoScanner::GetArtTypeFromSize(unsigned int width, unsigned int height)
-  {
-    std::string type = "thumb";
-    if (width*5 < height*4)
-      type = "poster";
-    else if (width*1 > height*4)
-      type = "banner";
-    return type;
   }
 
   std::pair<CVideoInfoScanner::InfoType, std::unique_ptr<IVideoInfoTagLoader>> CVideoInfoScanner::
@@ -1771,72 +1987,11 @@ CVideoInfoScanner::~CVideoInfoScanner()
     return CDirectory::Exists(path) ? path : "";
   }
 
-  void CVideoInfoScanner::AddLocalItemArtwork(KODI::ART::Artwork& itemArt,
-                                              const std::vector<std::string>& wantedArtTypes,
-                                              const std::string& itemPath,
-                                              bool addAll,
-                                              bool exactName)
-  {
-    std::string path = URIUtils::GetDirectory(itemPath);
-    if (path.empty())
-      return;
-
-    CFileItemList availableArtFiles;
-    CDirectory::GetDirectory(path, availableArtFiles,
-        CServiceBroker::GetFileExtensionProvider().GetPictureExtensions(),
-        DIR_FLAG_NO_FILE_DIRS | DIR_FLAG_READ_CACHE | DIR_FLAG_NO_FILE_INFO);
-
-    std::string baseFilename = URIUtils::GetFileName(itemPath);
-    if (!baseFilename.empty())
-    {
-      URIUtils::RemoveExtension(baseFilename);
-      baseFilename.append("-");
-    }
-
-    const bool caseSensitive{CServiceBroker::GetSettingsComponent()
-                                 ->GetAdvancedSettings()
-                                 ->m_caseSensitiveLocalArtMatch};
-
-    for (const auto& artFile : availableArtFiles)
-    {
-      std::string candidate{URIUtils::GetFileName(artFile->GetPath())};
-      const bool matchesFilename{!baseFilename.empty() &&
-                                 (caseSensitive
-                                      ? StringUtils::StartsWith(candidate, baseFilename)
-                                      : StringUtils::StartsWithNoCase(candidate, baseFilename))};
-
-      if (!baseFilename.empty() && !matchesFilename)
-        continue;
-
-      if (matchesFilename)
-        candidate.erase(0, baseFilename.length());
-      URIUtils::RemoveExtension(candidate);
-      StringUtils::ToLower(candidate);
-
-      // move 'folder' to thumb / poster / banner based on aspect ratio
-      // if such artwork doesn't already exist
-      if (!matchesFilename && StringUtils::EqualsNoCase(candidate, "folder") &&
-        !CVideoThumbLoader::IsArtTypeInWhitelist("folder", wantedArtTypes, exactName))
-      {
-        // cache the image to determine sizing
-        CTextureDetails details;
-        if (CServiceBroker::GetTextureCache()->CacheImage(artFile->GetPath(), details))
-        {
-          candidate = GetArtTypeFromSize(details.width, details.height);
-          if (itemArt.contains(candidate))
-            continue;
-        }
-      }
-
-      if ((addAll && CVideoThumbLoader::IsValidArtType(candidate)) ||
-        CVideoThumbLoader::IsArtTypeInWhitelist(candidate, wantedArtTypes, exactName))
-      {
-        itemArt[candidate] = artFile->GetPath();
-      }
-    }
-  }
-
-  void CVideoInfoScanner::GetArtwork(CFileItem *pItem, const CONTENT_TYPE &content, bool bApplyToDir, bool useLocal, const std::string &actorArtPath)
+  void CVideoInfoScanner::GetArtwork(CFileItem* pItem,
+                                     ContentType content,
+                                     bool bApplyToDir,
+                                     bool useLocal,
+                                     const std::string& actorArtPath)
   {
     int artLevel = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
         CSettings::SETTING_VIDEOLIBRARY_ARTWORK_LEVEL);
@@ -1852,7 +2007,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
     // get and cache thumb images
     std::string mediaType = ContentToMediaType(content, pItem->IsFolder());
     std::vector<std::string> artTypes = CVideoThumbLoader::GetArtTypes(mediaType);
-    bool moviePartOfSet = content == CONTENT_MOVIES && !movieDetails.m_set.title.empty();
+    bool moviePartOfSet = content == ContentType::MOVIES && movieDetails.m_set.HasTitle();
     std::vector<std::string> movieSetArtTypes;
     if (moviePartOfSet)
     {
@@ -1868,7 +2023,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
       if (!pItem->SkipLocalArt())
       {
         bool useFolder = false;
-        if (bApplyToDir && (content == CONTENT_MOVIES || content == CONTENT_MUSICVIDEOS))
+        if (bApplyToDir && (content == ContentType::MOVIES || content == ContentType::MUSICVIDEOS))
         {
           std::string filename = ART::GetLocalArtBaseFilename(*pItem, useFolder);
           std::string directory = URIUtils::GetDirectory(filename);
@@ -1886,7 +2041,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
 
       if (moviePartOfSet)
       {
-        std::string movieSetInfoPath = GetMovieSetInfoFolder(movieDetails.m_set.title);
+        std::string movieSetInfoPath = GetMovieSetInfoFolder(movieDetails.m_set.GetTitle());
         if (!movieSetInfoPath.empty())
         {
           KODI::ART::Artwork movieSetArt;
@@ -2046,7 +2201,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
           item.GetVideoInfoTag()->m_iEpisode = file->iEpisode;
           item.GetVideoInfoTag()->m_iSeason = file->iSeason;
         }
-        if (AddVideo(&item, CONTENT_TVSHOWS, file->isFolder, true, &showInfo) < 0)
+        if (AddVideo(&item, ContentType::TVSHOWS, file->isFolder, true, &showInfo) < 0)
           return InfoRet::INFO_ERROR;
         continue;
       }
@@ -2195,7 +2350,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
         if (item.GetVideoInfoTag()->m_iEpisode == -1)
           item.GetVideoInfoTag()->m_iEpisode = guide->iEpisode;
 
-        if (AddVideo(&item, CONTENT_TVSHOWS, file->isFolder, useLocal, &showInfo) < 0)
+        if (AddVideo(&item, ContentType::TVSHOWS, file->isFolder, useLocal, &showInfo) < 0)
           return InfoRet::INFO_ERROR;
       }
       else
@@ -2211,7 +2366,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
   }
 
   bool CVideoInfoScanner::GetDetails(CFileItem* pItem,
-                                     const std::unordered_map<std::string, std::string>& uniqueIDs,
+                                     const ADDON::CScraper::UniqueIDs& uniqueIDs,
                                      CScraperUrl& url,
                                      const ScraperPtr& scraper,
                                      IVideoInfoTagLoader* loader,
@@ -2526,7 +2681,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
   }
 
   bool CVideoInfoScanner::AddVideoExtras(CFileItemList& items,
-                                         const CONTENT_TYPE& content,
+                                         ContentType content,
                                          const std::string& path)
   {
     int dbId = -1;
@@ -2534,7 +2689,7 @@ CVideoInfoScanner::~CVideoInfoScanner()
     // get the library item which was added previously with the specified content type
     for (const auto& item : items)
     {
-      if (content == CONTENT_MOVIES && !item->IsFolder())
+      if (content == ContentType::MOVIES && !item->IsFolder())
       {
         dbId = m_database.GetMovieId(item->GetPath());
         if (dbId != -1)

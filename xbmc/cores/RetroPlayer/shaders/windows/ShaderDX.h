@@ -18,14 +18,7 @@
 
 #include <DirectXMath.h>
 
-namespace KODI
-{
-namespace RETRO
-{
-class CRenderContext;
-}
-
-namespace SHADER
+namespace KODI::SHADER
 {
 class IShaderLut;
 class IShaderSampler;
@@ -33,7 +26,7 @@ class IShaderSampler;
 class CShaderDX : protected CRPWinShader, public IShader
 {
 public:
-  CShaderDX(RETRO::CRenderContext& context);
+  CShaderDX();
   ~CShaderDX() override;
 
   // Implementation of IShader
@@ -48,7 +41,7 @@ public:
   void SetSizes(const float2& prevSize,
                 const float2& prevTextureSize,
                 const float2& nextSize) override;
-  void PrepareParameters(CPoint dest[4],
+  void PrepareParameters(const RETRO::ViewportCoordinates& dest,
                          IShaderTexture& sourceTexture,
                          const std::vector<std::unique_ptr<IShaderTexture>>& pShaderTextures,
                          const std::vector<std::unique_ptr<IShader>>& pShaders,
@@ -97,9 +90,6 @@ private:
   cbInput GetInputData(uint64_t frameCount = 0) const;
   void SetShaderParameters(const CD3DTexture& sourceTexture);
 
-  // Construction parameters
-  RETRO::CRenderContext& m_context;
-
   // Currently loaded shader's source code
   std::string m_shaderSource;
 
@@ -144,5 +134,4 @@ private:
   //ID3D11SamplerState* m_pSampler{nullptr};
 };
 
-} // namespace SHADER
-} // namespace KODI
+} // namespace KODI::SHADER

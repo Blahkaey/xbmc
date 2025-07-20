@@ -18,17 +18,16 @@
 
 #include <utility>
 
-using namespace KODI;
-using namespace SHADER;
+using namespace KODI::SHADER;
 
 CShaderLutGLES::CShaderLutGLES(std::string id, std::string path)
   : IShaderLut(std::move(id), std::move(path))
 {
 }
 
-bool CShaderLutGLES::Create(RETRO::CRenderContext& context, const ShaderLut& lut)
+bool CShaderLutGLES::Create(const ShaderLut& lut)
 {
-  std::unique_ptr<CTexture> lutTexture(CreateLUTTexture(context, lut));
+  std::unique_ptr<CTexture> lutTexture(CreateLUTTexture(lut));
   if (!lutTexture)
   {
     CLog::Log(LOGWARNING, "CShaderLutGLES::Create: Couldn't create texture for LUT: {}", lut.strId);
@@ -39,11 +38,10 @@ bool CShaderLutGLES::Create(RETRO::CRenderContext& context, const ShaderLut& lut
   return true;
 }
 
-std::unique_ptr<CTexture> CShaderLutGLES::CreateLUTTexture(RETRO::CRenderContext& context,
-                                                           const ShaderLut& lut)
+std::unique_ptr<CTexture> CShaderLutGLES::CreateLUTTexture(const ShaderLut& lut)
 {
   std::unique_ptr<CTexture> texture = CTexture::LoadFromFile(lut.path);
-  CGLESTexture* textureGL = static_cast<CGLESTexture*>(texture.get());
+  auto* textureGL = static_cast<CGLESTexture*>(texture.get());
 
   if (textureGL == nullptr)
   {

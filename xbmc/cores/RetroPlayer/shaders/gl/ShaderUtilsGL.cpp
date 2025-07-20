@@ -11,8 +11,7 @@
 #include "ServiceBroker.h"
 #include "rendering/gl/RenderSystemGL.h"
 
-using namespace KODI;
-using namespace SHADER;
+using namespace KODI::SHADER;
 
 GLint CShaderUtilsGL::TranslateWrapType(WrapType wrapType)
 {
@@ -68,7 +67,8 @@ std::string CShaderUtilsGL::GetGLSLVersion(std::string& source)
   // Set GLSL version according to GL version
   else
   {
-    unsigned int major, minor;
+    unsigned int major{0};
+    unsigned int minor{0};
     CServiceBroker::GetRenderSystem()->GetRenderVersion(major, minor);
     version = major * 100 + minor * 10;
 

@@ -407,8 +407,8 @@ void CGUIDialogVideoInfo::SetMovie(const CFileItem *item)
     CVideoDatabase database;
     database.Open();
     database.GetMoviesNav(m_movieItem->GetPath(), *m_castList, -1, -1, -1, -1, -1, -1,
-                          m_movieItem->GetVideoInfoTag()->m_set.id, -1,
-                          SortDescription(), VideoDbDetailsAll);
+                          m_movieItem->GetVideoInfoTag()->m_set.GetID(), -1, SortDescription(),
+                          VideoDbDetailsAll);
     m_castList->Sort(SortBySortTitle, SortOrderDescending);
     CVideoThumbLoader loader;
     for (auto& item : *m_castList)
@@ -791,7 +791,7 @@ void CGUIDialogVideoInfo::Play(bool resume)
       // play button acts according to default play action setting
       KODI::VIDEO::GUILIB::CVideoPlayActionProcessor proc{m_movieItem};
       proc.ProcessDefaultAction();
-      if (proc.UserCancelled())
+      if (proc.GetUserCancelled())
       {
         // The Resume dialog was closed without any choice
         SetMovie(m_movieItem.get()); // restore cast list, which was cleared on dialog close
@@ -1558,9 +1558,9 @@ bool CGUIDialogVideoInfo::GetSetForMovie(const CFileItem* movieItem,
   int currentSetId = 0;
   std::string currentSetLabel;
 
-  if (movieItem->GetVideoInfoTag()->m_set.id > currentSetId)
+  if (movieItem->GetVideoInfoTag()->m_set.GetID() > currentSetId)
   {
-    currentSetId = movieItem->GetVideoInfoTag()->m_set.id;
+    currentSetId = movieItem->GetVideoInfoTag()->m_set.GetID();
     currentSetLabel = videodb.GetSetById(currentSetId);
   }
 

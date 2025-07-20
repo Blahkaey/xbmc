@@ -1720,7 +1720,7 @@ int CMusicDatabase::AddGenre(std::string& strGenre)
                           strGenre.c_str());
       m_pDS->exec(strSQL);
 
-      const int idGenre = static_cast<int>(m_pDS->lastinsertid());
+      const auto idGenre = static_cast<int>(m_pDS->lastinsertid());
       m_genreCache.try_emplace(strGenre, idGenre);
       return idGenre;
     }
@@ -3238,7 +3238,7 @@ void CMusicDatabase::GetFileItemFromArtistCredits(VECARTISTCREDITS& artistCredit
 
 CAlbum CMusicDatabase::GetAlbumFromDataset(dbiplus::Dataset* pDS,
                                            int offset /* = 0 */,
-                                           bool imageURL /* = false*/)
+                                           bool imageURL /* = false*/) const
 {
   return GetAlbumFromDataset(pDS->get_sql_record(), offset, imageURL);
 }
@@ -3321,7 +3321,7 @@ CMusicRole CMusicDatabase::GetArtistRoleFromDataset(const dbiplus::sql_record* c
 
 CArtist CMusicDatabase::GetArtistFromDataset(dbiplus::Dataset* pDS,
                                              int offset /* = 0 */,
-                                             bool needThumb /* = true */)
+                                             bool needThumb /* = true */) const
 {
   return GetArtistFromDataset(pDS->get_sql_record(), offset, needThumb);
 }
@@ -8411,7 +8411,7 @@ std::string CMusicDatabase::GetIgnoreArticleSQL(const std::string& strField) con
 std::string CMusicDatabase::SortnameBuildSQL(const std::string& strAlias,
                                              const SortAttribute& sortAttributes,
                                              const std::string& strField,
-                                             const std::string& strSortField)
+                                             const std::string& strSortField) const
 {
   /*
   Build SQL for sort name scalar subquery from sort attributes and ignore article list.
@@ -11161,7 +11161,7 @@ bool CMusicDatabase::GetGenresJSON(CFileItemList& items, bool bSources)
   return false;
 }
 
-std::string CMusicDatabase::GetAlbumDiscTitle(int idAlbum, int idDisc)
+std::string CMusicDatabase::GetAlbumDiscTitle(int idAlbum, int idDisc) const
 {
   // Get disc node title from ids allowing for "*all"
   std::string disctitle;
@@ -11594,7 +11594,7 @@ bool CMusicDatabase::SetScraperAll(const std::string& strBaseDir, const ADDON::S
   int idSetting = -1;
   try
   {
-    CONTENT_TYPE content = CONTENT_NONE;
+    ADDON::ContentType content = ADDON::ContentType::NONE;
 
     // Build where clause from virtual path
     Filter extFilter;
@@ -11606,11 +11606,11 @@ bool CMusicDatabase::SetScraperAll(const std::string& strBaseDir, const ADDON::S
     std::string itemType = musicUrl.GetType();
     if (StringUtils::EqualsNoCase(itemType, "artists"))
     {
-      content = CONTENT_ARTISTS;
+      content = ADDON::ContentType::ARTISTS;
     }
     else if (StringUtils::EqualsNoCase(itemType, "albums"))
     {
-      content = CONTENT_ALBUMS;
+      content = ADDON::ContentType::ALBUMS;
     }
     else
       return false; //Only artists and albums have info settings
@@ -11625,7 +11625,7 @@ bool CMusicDatabase::SetScraperAll(const std::string& strBaseDir, const ADDON::S
 
     BeginTransaction();
     // Clear current scraper settings (0 => default scraper used)
-    if (content == CONTENT_ARTISTS)
+    if (content == ADDON::ContentType::ARTISTS)
       strSQL = "UPDATE artist SET idInfoSetting = %i ";
     else
       strSQL = "UPDATE album SET idInfoSetting = %i ";
@@ -11643,7 +11643,7 @@ bool CMusicDatabase::SetScraperAll(const std::string& strBaseDir, const ADDON::S
       m_pDS->exec(strSQL);
       idSetting = static_cast<int>(m_pDS->lastinsertid());
 
-      if (content == CONTENT_ARTISTS)
+      if (content == ADDON::ContentType::ARTISTS)
         strSQL = "UPDATE artist SET idInfoSetting = %i ";
       else
         strSQL = "UPDATE album SET idInfoSetting = %i ";
@@ -11662,7 +11662,7 @@ bool CMusicDatabase::SetScraperAll(const std::string& strBaseDir, const ADDON::S
 }
 
 bool CMusicDatabase::SetScraper(int id,
-                                const CONTENT_TYPE& content,
+                                ADDON::ContentType content,
                                 const ADDON::ScraperPtr& scraper)
 {
   if (nullptr == m_pDB)
@@ -11675,7 +11675,7 @@ bool CMusicDatabase::SetScraper(int id,
   {
     BeginTransaction();
     // Fetch current info settings for item, 0 => default is used
-    if (content == CONTENT_ARTISTS)
+    if (content == ADDON::ContentType::ARTISTS)
       strSQL = "SELECT idInfoSetting FROM artist WHERE idArtist = %i";
     else
       strSQL = "SELECT idInfoSetting FROM album WHERE idAlbum = %i";
@@ -11692,7 +11692,7 @@ bool CMusicDatabase::SetScraper(int id,
       m_pDS->exec(strSQL);
       idSetting = static_cast<int>(m_pDS->lastinsertid());
 
-      if (content == CONTENT_ARTISTS)
+      if (content == ADDON::ContentType::ARTISTS)
         strSQL = "UPDATE artist SET idInfoSetting = %i WHERE idArtist = %i";
       else
         strSQL = "UPDATE album SET idInfoSetting = %i WHERE idAlbum = %i";
@@ -11718,7 +11718,7 @@ bool CMusicDatabase::SetScraper(int id,
   return false;
 }
 
-bool CMusicDatabase::GetScraper(int id, const CONTENT_TYPE& content, ADDON::ScraperPtr& scraper)
+bool CMusicDatabase::GetScraper(int id, ADDON::ContentType content, ADDON::ScraperPtr& scraper)
 {
   std::string scraperUUID;
   std::string strSettings;
@@ -11731,7 +11731,7 @@ bool CMusicDatabase::GetScraper(int id, const CONTENT_TYPE& content, ADDON::Scra
 
     std::string strSQL;
     strSQL = "SELECT strScraperPath, strSettings FROM infosetting JOIN ";
-    if (content == CONTENT_ARTISTS)
+    if (content == ADDON::ContentType::ARTISTS)
       strSQL = strSQL + "artist ON artist.idInfoSetting = infosetting.idSetting "
                         "WHERE artist.idArtist = %i";
     else
@@ -11849,7 +11849,7 @@ bool CMusicDatabase::GetItems(const std::string& strBaseDir,
   return false;
 }
 
-std::string CMusicDatabase::GetItemById(const std::string& itemType, int id)
+std::string CMusicDatabase::GetItemById(const std::string& itemType, int id) const
 {
   if (StringUtils::EqualsNoCase(itemType, "genres"))
     return GetGenreById(id);

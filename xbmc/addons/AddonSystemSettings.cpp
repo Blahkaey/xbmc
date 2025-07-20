@@ -96,7 +96,7 @@ void CAddonSystemSettings::OnSettingChanged(const std::shared_ptr<const CSetting
   }
 }
 
-bool CAddonSystemSettings::GetActive(AddonType type, AddonPtr& addon)
+bool CAddonSystemSettings::GetActive(AddonType type, AddonPtr& addon) const
 {
   auto it = m_activeSettings.find(type);
   if (it != m_activeSettings.end())
@@ -108,7 +108,7 @@ bool CAddonSystemSettings::GetActive(AddonType type, AddonPtr& addon)
   return false;
 }
 
-bool CAddonSystemSettings::SetActive(AddonType type, const std::string& addonID)
+bool CAddonSystemSettings::SetActive(AddonType type, const std::string& addonID) const
 {
   auto it = m_activeSettings.find(type);
   if (it != m_activeSettings.end())
@@ -119,13 +119,13 @@ bool CAddonSystemSettings::SetActive(AddonType type, const std::string& addonID)
   return false;
 }
 
-bool CAddonSystemSettings::IsActive(const IAddon& addon)
+bool CAddonSystemSettings::IsActive(const IAddon& addon) const
 {
   AddonPtr active;
   return GetActive(addon.Type(), active) && active->ID() == addon.ID();
 }
 
-bool CAddonSystemSettings::UnsetActive(const AddonInfoPtr& addon)
+bool CAddonSystemSettings::UnsetActive(const AddonInfoPtr& addon) const
 {
   auto it = m_activeSettings.find(addon->MainType());
   if (it == m_activeSettings.end())

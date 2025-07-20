@@ -227,7 +227,7 @@ void CMusicInfoScanner::Process()
 
         // find album info
         ADDON::ScraperPtr scraper;
-        if (!m_musicDatabase.GetScraper(album.idAlbum, CONTENT_ALBUMS, scraper))
+        if (!m_musicDatabase.GetScraper(album.idAlbum, ContentType::ALBUMS, scraper))
           continue;
 
         UpdateDatabaseAlbumInfo(album, scraper, false);
@@ -260,7 +260,7 @@ void CMusicInfoScanner::Process()
 
         // find album info
         ADDON::ScraperPtr scraper;
-        if (!m_musicDatabase.GetScraper(artist.idArtist, CONTENT_ARTISTS, scraper) || !scraper)
+        if (!m_musicDatabase.GetScraper(artist.idArtist, ContentType::ARTISTS, scraper) || !scraper)
           continue;
 
         UpdateDatabaseArtistInfo(artist, scraper, false);
@@ -625,7 +625,9 @@ static bool SortSongsByTrack(const CSong& song, const CSong& song2)
   return song.iTrack < song2.iTrack;
 }
 
-void CMusicInfoScanner::FileItemsToAlbums(CFileItemList& items, VECALBUMS& albums, MAPSONGS* songsMap /* = NULL */)
+void CMusicInfoScanner::FileItemsToAlbums(const CFileItemList& items,
+                                          VECALBUMS& albums,
+                                          MAPSONGS* songsMap /* = nullptr */)
 {
   /*
    * Step 1: Convert the FileItems into Songs.

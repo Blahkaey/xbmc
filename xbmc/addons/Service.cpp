@@ -54,8 +54,9 @@ void CServiceAddonManager::OnEvent(const ADDON::AddonEvent& event)
 
 void CServiceAddonManager::Start()
 {
-  m_addonMgr.Events().Subscribe(this, &CServiceAddonManager::OnEvent);
-  m_addonMgr.UnloadEvents().Subscribe(this, &CServiceAddonManager::OnEvent);
+  m_addonMgr.Events().Subscribe(this, [this](const ADDON::AddonEvent& event) { OnEvent(event); });
+  m_addonMgr.UnloadEvents().Subscribe(this,
+                                      [this](const ADDON::AddonEvent& event) { OnEvent(event); });
   VECADDONS addons;
   if (m_addonMgr.GetAddons(addons, AddonType::SERVICE))
   {
@@ -120,7 +121,8 @@ void CServiceAddonManager::Stop(const std::string& addonId)
   }
 }
 
-void CServiceAddonManager::Stop(const std::map<std::string, int>::value_type& service)
+void CServiceAddonManager::Stop(
+    const std::map<std::string, int, std::less<>>::value_type& service) const
 {
   CLog::Log(LOGDEBUG, "CServiceAddonManager: stopping {}.", service.first);
   if (!CScriptInvocationManager::GetInstance().Stop(service.second))

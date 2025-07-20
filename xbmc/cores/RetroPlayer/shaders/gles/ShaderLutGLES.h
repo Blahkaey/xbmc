@@ -16,14 +16,7 @@
 
 #include "system_gl.h"
 
-namespace KODI
-{
-namespace RETRO
-{
-class CRenderContext;
-}
-
-namespace SHADER
+namespace KODI::SHADER
 {
 class CTextureBase;
 struct ShaderLut;
@@ -35,15 +28,13 @@ public:
   ~CShaderLutGLES() override = default;
 
   // Implementation of IShaderLut
-  bool Create(RETRO::CRenderContext& context, const ShaderLut& lut) override;
+  bool Create(const ShaderLut& lut) override;
   CTexture* GetTexture() override { return m_texture.get(); }
 
 private:
-  static std::unique_ptr<CTexture> CreateLUTTexture(RETRO::CRenderContext& context,
-                                                    const ShaderLut& lut);
+  static std::unique_ptr<CTexture> CreateLUTTexture(const ShaderLut& lut);
 
   std::unique_ptr<CTexture> m_texture;
 };
 
-} // namespace SHADER
-} // namespace KODI
+} // namespace KODI::SHADER

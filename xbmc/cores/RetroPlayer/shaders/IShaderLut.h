@@ -17,14 +17,7 @@
 
 class CTexture;
 
-namespace KODI
-{
-namespace RETRO
-{
-class CRenderContext;
-}
-
-namespace SHADER
+namespace KODI::SHADER
 {
 /*!
  * \brief A lookup table to apply color transforms in a shader
@@ -38,12 +31,11 @@ public:
   /*!
    * \brief Create the LUT and allocate resources
    *
-   * \param context The render context
    * \param lut The LUT information structure
    *
    * \return Returns true if successful and the LUT can be used, false otherwise
    */
-  virtual bool Create(RETRO::CRenderContext& context, const ShaderLut& lut) = 0;
+  virtual bool Create(const ShaderLut& lut) = 0;
 
   /*!
    * \brief Gets ID of LUT
@@ -70,5 +62,4 @@ protected:
   std::string m_id;
   std::string m_path;
 };
-} // namespace SHADER
-} // namespace KODI
+} // namespace KODI::SHADER

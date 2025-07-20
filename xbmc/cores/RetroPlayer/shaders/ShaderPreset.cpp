@@ -19,8 +19,7 @@
 
 #include <regex>
 
-using namespace KODI;
-using namespace SHADER;
+using namespace KODI::SHADER;
 
 CShaderPreset::CShaderPreset(RETRO::CRenderContext& context,
                              unsigned videoWidth,
@@ -42,7 +41,7 @@ bool CShaderPreset::ReadPresetFile(const std::string& presetPath)
   return CServiceBroker::GetGameServices().VideoShaders().LoadPreset(presetPath, *this);
 }
 
-bool CShaderPreset::RenderUpdate(const CPoint dest[],
+bool CShaderPreset::RenderUpdate(const RETRO::ViewportCoordinates& dest,
                                  IShaderTexture& source,
                                  IShaderTexture& target)
 {
@@ -57,9 +56,9 @@ bool CShaderPreset::RenderUpdate(const CPoint dest[],
   if (!Update())
     return false;
 
-  PrepareParameters(dest, source, target);
+  PrepareParameters(dest, source);
 
-  const unsigned int numPasses = static_cast<unsigned int>(m_pShaders.size());
+  const auto numPasses = static_cast<unsigned int>(m_pShaders.size());
 
   // Apply all passes except the last one (which needs to be applied to the backbuffer)
   IShaderTexture* sourceTexture = &source;
@@ -95,8 +94,8 @@ void CShaderPreset::SetVideoSize(unsigned int videoWidth, unsigned int videoHeig
 
 bool CShaderPreset::SetShaderPreset(const std::string& shaderPresetPath)
 {
-  m_bPresetNeedsUpdate = true;
   m_presetPath = shaderPresetPath;
+  m_bPresetNeedsUpdate = true;
   return Update();
 }
 
@@ -159,13 +158,6 @@ bool CShaderPreset::Update()
   return true;
 }
 
-void CShaderPreset::UpdateViewPort()
-{
-  CRect viewPort;
-  m_context.GetViewPort(viewPort);
-  UpdateViewPort(viewPort);
-}
-
 void CShaderPreset::UpdateViewPort(CRect viewPort)
 {
   const float2 currentViewPortSize = {viewPort.Width(), viewPort.Height()};
@@ -173,7 +165,6 @@ void CShaderPreset::UpdateViewPort(CRect viewPort)
   {
     m_outputSize = currentViewPortSize;
     m_bPresetNeedsUpdate = true;
-    Update();
   }
 }
 
@@ -183,31 +174,16 @@ void CShaderPreset::UpdateMVPs()
     videoShader->UpdateMVP();
 }
 
-void CShaderPreset::PrepareParameters(const CPoint dest[],
-                                      IShaderTexture& source,
-                                      IShaderTexture& target)
+void CShaderPreset::PrepareParameters(const RETRO::ViewportCoordinates& dest,
+                                      IShaderTexture& source)
 {
-  if (m_dest[0] != dest[0] || m_dest[1] != dest[1] || m_dest[2] != dest[2] ||
-      m_dest[3] != dest[3] || target.GetWidth() != m_outputSize.x ||
-      target.GetHeight() != m_outputSize.y)
-  {
-    for (size_t i = 0; i < 4; ++i)
-      m_dest[i] = dest[i];
-
-    m_outputSize = {target.GetWidth(), target.GetHeight()};
-
-    // Update projection matrix and update video shaders
-    UpdateMVPs();
-    UpdateViewPort();
-  }
-
-  const unsigned int numPasses = static_cast<unsigned int>(m_pShaders.size());
+  const auto numPasses = static_cast<unsigned int>(m_pShaders.size());
 
   // Prepare parameters for all shader passes
   for (unsigned int shaderIdx = 0; shaderIdx < numPasses; ++shaderIdx)
   {
     std::unique_ptr<IShader>& videoShader = m_pShaders[shaderIdx];
-    videoShader->PrepareParameters(m_dest, source, m_pShaderTextures, m_pShaders,
+    videoShader->PrepareParameters(dest, source, m_pShaderTextures, m_pShaders,
                                    static_cast<uint64_t>(m_frameCount));
   }
 }
